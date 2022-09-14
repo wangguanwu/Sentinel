@@ -28,6 +28,8 @@ import com.alibaba.csp.sentinel.dashboard.discovery.AppManagement;
 import com.alibaba.csp.sentinel.dashboard.discovery.MachineInfo;
 import com.alibaba.csp.sentinel.dashboard.auth.AuthService;
 import com.alibaba.csp.sentinel.dashboard.auth.AuthService.PrivilegeType;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRuleProvider;
+import com.alibaba.csp.sentinel.dashboard.rule.DynamicRulePublisher;
 import com.alibaba.csp.sentinel.slots.block.RuleConstant;
 import com.alibaba.csp.sentinel.util.StringUtil;
 import com.alibaba.csp.sentinel.dashboard.datasource.entity.SentinelVersion;
@@ -36,6 +38,7 @@ import com.alibaba.csp.sentinel.dashboard.domain.Result;
 import com.alibaba.csp.sentinel.dashboard.repository.rule.RuleRepository;
 import com.alibaba.csp.sentinel.dashboard.util.VersionUtils;
 
+import com.alibaba.nacos.common.utils.CollectionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -65,6 +68,14 @@ public class ParamFlowRuleController {
     private AppManagement appManagement;
     @Autowired
     private RuleRepository<ParamFlowRuleEntity, Long> repository;
+
+    private final DynamicRuleProvider<List<ParamFlowRuleEntity>> paramRuleNacosProvider;
+    private final DynamicRulePublisher<List<ParamFlowRuleEntity>> paramRuleNacosPublisher;
+
+    public ParamFlowRuleController(DynamicRuleProvider<List<ParamFlowRuleEntity>> paramRuleNacosProvider, DynamicRulePublisher<List<ParamFlowRuleEntity>> paramRuleNacosPublisher) {
+        this.paramRuleNacosProvider = paramRuleNacosProvider;
+        this.paramRuleNacosPublisher = paramRuleNacosPublisher;
+    }
 
     private boolean checkIfSupported(String app, String ip, int port) {
         try {
@@ -97,10 +108,21 @@ public class ParamFlowRuleController {
             return unsupportedVersion();
         }
         try {
-            return sentinelApiClient.fetchParamFlowRulesOfMachine(app, ip, port)
-                .thenApply(repository::saveAll)
-                .thenApply(Result::ofSuccess)
-                .get();
+//            return sentinelApiClient.fetchParamFlowRulesOfMachine(app, ip, port)
+//                .thenApply(repository::saveAll)
+//                .thenApply(Result::ofSuccess)
+//                .get();
+                List<ParamFlowRuleEntity> entities = this.paramRuleNacosProvider.getRules(app, ip, port);
+                if (CollectionUtils.isNotEmpty(entities)) {
+                    for (ParamFlowRuleEntity entity : entities) {
+                        entity.setApp(app);
+                        if (entity.getClusterConfig() != null && entity.getClusterConfig().getFlowId() != null) {
+                            entity.setId(entity.getClusterConfig().getFlowId());
+                        }
+                    }
+                }
+            List<ParamFlowRuleEntity> res = repository.saveAll(entities);
+            return Result.ofSuccess(res);
         } catch (ExecutionException ex) {
             logger.error("Error when querying parameter flow rules", ex.getCause());
             if (isNotSupported(ex.getCause())) {
@@ -135,7 +157,8 @@ public class ParamFlowRuleController {
         entity.setGmtModified(date);
         try {
             entity = repository.save(entity);
-            publishRules(entity.getApp(), entity.getIp(), entity.getPort()).get();
+//            publishRules(entity.getApp(), entity.getIp(), entity.getPort()).get();
+            publishRules(entity.getApp());
             return Result.ofSuccess(entity);
         } catch (ExecutionException ex) {
             logger.error("Error when adding new parameter flow rules", ex.getCause());
@@ -212,7 +235,8 @@ public class ParamFlowRuleController {
         entity.setGmtModified(date);
         try {
             entity = repository.save(entity);
-            publishRules(entity.getApp(), entity.getIp(), entity.getPort()).get();
+//            publishRules(entity.getApp(), entity.getIp(), entity.getPort()).get();
+            publishRules(entity.getApp());
             return Result.ofSuccess(entity);
         } catch (ExecutionException ex) {
             logger.error("Error when updating parameter flow rules, id=" + id, ex.getCause());
@@ -240,7 +264,8 @@ public class ParamFlowRuleController {
 
         try {
             repository.delete(id);
-            publishRules(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort()).get();
+//            publishRules(oldEntity.getApp(), oldEntity.getIp(), oldEntity.getPort()).get();
+            publishRules(oldEntity.getApp());
             return Result.ofSuccess(id);
         } catch (ExecutionException ex) {
             logger.error("Error when deleting parameter flow rules", ex.getCause());
@@ -266,4 +291,10 @@ public class ParamFlowRuleController {
     }
 
     private final SentinelVersion version020 = new SentinelVersion().setMinorVersion(2);
+
+    private void publishRules(/*@NonNull*/ String app) throws Exception {
+        List<ParamFlowRuleEntity> rules = repository.findAllByApp(app);
+        this.paramRuleNacosPublisher.publish(app, rules);
+    }
+
 }
